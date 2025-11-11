@@ -37,7 +37,11 @@ static void switchDmxPinToUART() {
 }
 
 
-
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
+	if (huart == uart && outputOn == 1) {
+		sendDmx();
+	}
+}
 
 void dmxInit(UART_HandleTypeDef* uartInstance, uint16_t nChannels, uint8_t startCode) {
 	dmxOutput[0] = startCode;
@@ -56,6 +60,7 @@ void dmxOff() {
 
 void dmxOn() {
 	outputOn = 1;
+	sendDmx();
 }
 
 void dmxWrite(uint16_t pos, uint8_t value) {
@@ -69,20 +74,5 @@ static void sendDmx() {
 	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_10, GPIO_PIN_SET);
 	usDelay(MAB_DURATION);
 	switchDmxPinToUART();
-	HAL_UART_Transmit(uart, dmxOutput, channels+1, 100);
-}
-
-static void runDmx() {
-	for(;;) {
-		if(UART_CheckIdleState(uart) == HAL_OK) {
-			sendDmx();
-		} else {
-			usDelay(20);
-		}
-	}
-}
-
-void startDmx() {
-	dmxOn();
-	runDmx();
+	HAL_UART_Transmit_DMA(uart, dmxOutput, channels+1);
 }

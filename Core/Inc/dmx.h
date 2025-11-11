@@ -14,9 +14,10 @@
 
 #endif /* INC_DMX_H_ */
 
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart);
+
 void dmxInit(UART_HandleTypeDef* uartInstance, uint16_t nChannels, uint8_t startCode);
 void dmxBegin();
 void dmxOff();
 void dmxOn();
 void dmxWrite(uint16_t pos, uint8_t value);
-void startDmx();

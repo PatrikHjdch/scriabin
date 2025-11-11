@@ -38,6 +38,9 @@
 #define ACTIVE_SENSING	0b11111110
 #define RESET			0b11111111
 
+// MASKS
+#define STATUS_BYTE_TYPE_MASK 0b11110000
+#define STATUS_BYTE_CHANNEL_MASK 0b00001111
 #endif /* INC_MIDI_H_ */
 
 extern void (*midiNoteOnHandler)(uint8_t channel, uint8_t pitch, uint8_t velocity);
@@ -58,6 +61,8 @@ extern void (*midiContinueHandler)();
 extern void (*midiStopHandler)();
 extern void (*midiActiveSensingHandler)();
 extern void (*midiResetHandler)();
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart);
 
 void midiInit(UART_HandleTypeDef * uart, DMA_HandleTypeDef * dmaC);
 void readMidi();
