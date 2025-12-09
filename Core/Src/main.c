@@ -17,14 +17,14 @@
  */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
-#include <usbComms.h>
 #include "main.h"
-#include "usb_device.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "dmx.h"
 #include "midi.h"
+#include "usbd_cdc_if.h"
+#include "usb_device.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -34,20 +34,6 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define CONFIGS 15
-#define MEM1_ADDRESS 0b10100010
-#define MEM2_ADDRESS 0b10100000
-
-#define N_CHANNELS 16
-#define N_PITCHES 128
-#define N_TYPES 4
-
-#define NOTE_LINK_ENTRY_LENGTH 7
-#define NOTE_ON_ENTRY_LENGTH 4
-#define NOTE_OFF_ENTRY_LENGTH 3
-#define CONTROL_CHANGE_ENTRY_LENGTH 2
-
-#define TIMEOUT_SCHEDULE_LENGTH 32
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -58,16 +44,22 @@
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
 
+TIM_HandleTypeDef htim16;
+
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart3;
 DMA_HandleTypeDef hdma_usart1_rx;
 DMA_HandleTypeDef hdma_usart3_tx;
 
 /* USER CODE BEGIN PV */
-extern USBD_CDC_HandleTypeDef;
-uint8_t UserRxBufferFS[APP_RX_DATA_SIZE];
-uint8_t UserTxBufferFS[APP_TX_DATA_SIZE];
+extern USBD_CDC_HandleTypeDef husb1;
+extern uint8_t UserRxBufferFS[APP_RX_DATA_SIZE];
+extern uint8_t UserTxBufferFS[APP_TX_DATA_SIZE];
 
+volatile uint8_t mem1[1048]; // tabulka adres
+volatile uint8_t mem2[1024]; // seznam vazeb
+
+// fronta pro timeouty (mozna bude lepsi pouzit struct array)
 uint8_t timeoutScheduleMidiChannels[TIMEOUT_SCHEDULE_LENGTH];
 uint8_t timeoutScheduleMidiPitches[TIMEOUT_SCHEDULE_LENGTH];
 uint16_t timeoutScheduleDmxChannels[TIMEOUT_SCHEDULE_LENGTH];
@@ -81,81 +73,198 @@ uint8_t timeoutScheduleWritePtr;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
+static void MX_I2C1_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_USART1_UART_Init(void);
-static void MX_I2C1_Init(void);
+static void MX_TIM16_Init(void);
 /* USER CODE BEGIN PFP */
-
+void scheduleTimeout(uint8_t midiChannel, uint8_t pitch, uint16_t dmxChannel, uint8_t dmxValue, uint16_t timeout); // naplanovani timeoutu
+void disableTimeout(uint8_t midiChannel, uint8_t pitch); // vypnuti timeoutu kdyz vcas prijde midi zprava
+void checkForTimeouts(); // kontrolovani timeoutu
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void initializePrototypeTable() {
+	// ukazatele na pozice v pametech kam zapisujeme
+	uint16_t mem1WP = CONFIGS; // rezervujeme prvnich par mist v pameti pro jina nastaveni
+	uint16_t mem2WP = 0;
 
-// MIDI message handlers
-void noteOn(uint8_t channel, uint8_t pitch, uint8_t velocity) {
-	uint8_t addresses[4]; // buffer to get the 16bit addresses of the entries:
-	uint16_t entries[2]; // 1st value = address of 1st entry, 2nd value = address of 1st entry of next pitch
-	// note on + off:
-	// bytes 0 & 1 = MSB & LSB of dmx channel, byte 2 = use velocity?, byte 3 = dmx value for note on, byte 4 = dmx value for note off, bytes 5 & 6 = timeout MSB & LSB
-	// note on:
-	// bytes 0 & 1 = MSB & LSB of dmx channel, byte 2 = use velocity?, byte 3 = dmx value
-	uint8_t dmxData[NOTE_LINK_ENTRY_LENGTH];
-	HAL_I2C_Mem_Read(hi2c, MEM1_ADDRESS, CONFIGS + channel * N_TYPES * N_PITCHES * 2 + pitch * 2, I2C_MEMADD_SIZE_16BIT, addresses, 4, 100);
-	entries[0] = (uint16_t)(addresses[0] << 8 + addresses[1]);
-	entries[1] = (uint16_t)(addresses[2] << 8 + addresses[3]);
-	for (uint16_t i = entries[0]; i < entries[1]; i = i + NOTE_LINK_ENTRY_LENGTH) {
-		HAL_I2C_Mem_Read(&hi2c1, MEM2_ADDRESS, i, I2C_MEMADD_SIZE_16BIT, dmxData, NOTE_LINK_ENTRY_LENGTH, 100);
-		dmxWrite(dmxData[0] << 8 + dmxData[1], dmxData[2] == 1 ? velocity*2 : dmxData[3]);
-		if (dmxData[5] << 8 + dmxData[6] > 0) {
-			scheduleTimeout(channel, pitch, dmxData[0] << 8 + dmxData[1], dmxData[4], dmxData[5] << 8 + dmxData[6]);
-		}
+	// vytvarime vazby na kanale 1 pro Note On + Off s cislem noty 60 (C4)
+	uint8_t channel = 0;
+	uint8_t type = NOTE_TYPE;
+	uint8_t pitch = 60;
+	uint16_t address = CONFIGS + channel * N_TYPES * N_PITCHES * 2 + pitch * 2 + 2 * N_PITCHES * type;
+	while (mem1WP <= address) { // vyplneni vsech mezipozic stejnou adresou
+		mem1[mem1WP++] = mem2WP >> 8;
+		mem1[mem1WP++] = mem2WP & 0xFF;
 	}
+	mem2[mem2WP++] = 0; // MSB DMX kanalu
+	mem2[mem2WP++] = 2; // LSB DMX kanalu
+	mem2[mem2WP++] = 0; // nepouzivame velocity
+	mem2[mem2WP++] = 255; // DMX hodnota pro Note On
+	mem2[mem2WP++] = 0; // DMX hodnota pro Note Off
+	mem2[mem2WP++] = 5000 >> 8; // MSB timeoutu
+	mem2[mem2WP++] = 5000 & 0xFF; // LSB timeoutu
 
-	HAL_I2C_Mem_Read(hi2c, MEM1_ADDRESS, CONFIGS + channel * N_TYPES * N_PITCHES * 2 + pitch * 2 + N_PITCHES * 1, I2C_MEMADD_SIZE_16BIT, addresses, 4, 100);
-	entries[0] = (uint16_t)(addresses[0] << 8 + addresses[1]);
-	entries[1] = (uint16_t)(addresses[2] << 8 + addresses[3]);
-	for (uint16_t i = entries[0]; i < entries[1]; i = i + NOTE_ON_ENTRY_LENGTH) {
-		HAL_I2C_Mem_Read(&hi2c1, MEM2_ADDRESS, i, I2C_MEMADD_SIZE_16BIT, dmxData, NOTE_ON_ENTRY_LENGTH, 100);
-		dmxWrite(dmxData[0] << 8 + dmxData[1], dmxData[2] == 1 ? velocity*2 : dmxData[3]);
+	pitch = 62; // cislo noty 62 (D4)
+	address = CONFIGS + channel * N_TYPES * N_PITCHES * 2 + pitch * 2 + 2 * N_PITCHES * type;
+	while (mem1WP <= address) { // vyplneni vsech mezipozic stejnou adresou
+		mem1[mem1WP++] = mem2WP >> 8;
+		mem1[mem1WP++] = mem2WP & 0xFF;
+	}
+	mem2[mem2WP++] = 0;
+	mem2[mem2WP++] = 3;
+	mem2[mem2WP++] = 0;
+	mem2[mem2WP++] = 255;
+	mem2[mem2WP++] = 0;
+	mem2[mem2WP++] = 5000 >> 8;
+	mem2[mem2WP++] = 5000 & 0xFF;
+
+	pitch = 64; // cislo noty 62 (E4)
+	address = CONFIGS + channel * N_TYPES * N_PITCHES * 2 + pitch * 2 + 2 * N_PITCHES * type;
+	while (mem1WP <= address) {
+		mem1[mem1WP++] = mem2WP >> 8;
+		mem1[mem1WP++] = mem2WP & 0xFF;
+	}
+	mem2[mem2WP++] = 0;
+	mem2[mem2WP++] = 4;
+	mem2[mem2WP++] = 0;
+	mem2[mem2WP++] = 255;
+	mem2[mem2WP++] = 0;
+	mem2[mem2WP++] = 5000 >> 8;
+	mem2[mem2WP++] = 5000 & 0xFF;
+
+	while (mem1WP < 1046) { // vyplneni zbytku pameti stejnou adresou
+		mem1[mem1WP++] = mem2WP >> 8;
+		mem1[mem1WP++] = mem2WP & 0xFF;
 	}
 }
 
-void noteOff(uint8_t channel, uint8_t pitch, uint8_t velocity) {
-	uint8_t addresses[4]; // buffer to get the 16bit addresses of the entries:
-	uint16_t entries[2]; // 1st value = address of 1st entry, 2nd value = address of 1st entry of next pitch
-	uint8_t dmxData[NOTE_LINK_ENTRY_LENGTH]; // bytes 1 & 2 = MSB & LSB of dmx channel, byte 3 = dmx value
 
-	HAL_I2C_Mem_Read(hi2c, MEM1_ADDRESS, CONFIGS + channel * N_TYPES * N_PITCHES * 2 + pitch * 2, I2C_MEMADD_SIZE_16BIT, addresses, 4, 100);
-		entries[0] = (uint16_t)(addresses[0] << 8 + addresses[1]);
-		entries[1] = (uint16_t)(addresses[2] << 8 + addresses[3]);
-		for (uint16_t i = entries[0]; i < entries[1]; i = i + NOTE_LINK_ENTRY_LENGTH) {
-			HAL_I2C_Mem_Read(&hi2c1, MEM2_ADDRESS, i, I2C_MEMADD_SIZE_16BIT, dmxData, NOTE_LINK_ENTRY_LENGTH, 100);
-			dmxWrite(dmxData[0] << 8 + dmxData[1], dmxData[4]);
+// USB VBUS Sensing
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+	if (GPIO_Pin == VBUS_DETECT_Pin) {
+		if (HAL_GPIO_ReadPin(VBUS_DETECT_GPIO_Port, VBUS_DETECT_Pin) == GPIO_PIN_SET) {
+			MX_USB_DEVICE_Init();
 		}
-		if (dmxData[5] << 8 + dmxData[6] > 0) {
+		else {
+			USB_Device_DeInit();
+		}
+	}
+}
+
+// MIDI handlery
+void noteOn(uint8_t channel, uint8_t pitch, uint8_t velocity) { // note on
+	HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET); // indikace zpracovavani zpravy
+
+	uint16_t entries[2]; // 1: adresa prvni vazby midi zpravy, 2: adresa prvni vazby dalsi midi zpravy
+
+	uint8_t dmxData[NOTE_ENTRY_LENGTH];
+	// struktura vazby note on + off:
+	// 0: MSB DMX kanalu
+	// 1: LSB DMX kanalu
+	// 2: pouzivani velocity
+	// 3: DMX hodnota pro Note On
+	// 4: DMX hodnota pro Note Off
+	// 5: timeout MSB
+	// 6: timeout LSB
+
+	// struktura vazby note on:
+	// 0: MSB DMX kanalu
+	// 1: LSB DMX kanalu
+	// 2: pouzivani velocity
+	// 3: DMX hodnota
+
+	// vytazeni adres z tabulky adres (note on + off)
+	uint16_t address = CONFIGS + channel * N_TYPES * N_PITCHES * 2 + pitch * 2 + 2 * N_PITCHES * NOTE_TYPE;
+	entries[0] = (uint16_t)((mem1[address] << 8) + mem1[address + 1]);
+	entries[1] = (uint16_t)((mem1[address + 2] << 8) + mem1[address + 3]);
+
+	for (uint16_t i = entries[0]; i < entries[1]; i = i + NOTE_ENTRY_LENGTH) { // prochazeni celeho seznamu
+		memcpy(dmxData, (const void *)&mem2[i], NOTE_ENTRY_LENGTH); // kopirovani dat do nove pracovni pameti
+		dmxWrite((dmxData[0] << 8) + dmxData[1], dmxData[2] == 1 ? velocity*2 : dmxData[3]); // zapis do DMX
+		if ((dmxData[5] << 8) + dmxData[6] > 0) { // naplanovani timeoutu
+			scheduleTimeout(channel, pitch, (dmxData[0] << 8) + dmxData[1], dmxData[4], (dmxData[5] << 8) + dmxData[6]);
+		}
+	}
+
+	// vytazeni adres z tabulky adres (note on)
+	address = CONFIGS + channel * N_TYPES * N_PITCHES * 2 + pitch * 2 + 2 * N_PITCHES * NOTE_ON_TYPE;
+	entries[0] = (uint16_t)((mem1[address] << 8) + mem1[address + 1]);
+	entries[1] = (uint16_t)((mem1[address + 2] << 8) + mem1[address + 3]);
+
+	for (uint16_t i = entries[0]; i < entries[1]; i = i + NOTE_ON_ENTRY_LENGTH) { // prochazeni celeho seznamu
+		memcpy(dmxData, (const void *)&mem2[i], NOTE_ON_ENTRY_LENGTH); // kopirovani dat do nove pracovni pameti
+		dmxWrite((dmxData[0] << 8) + dmxData[1], dmxData[2] == 1 ? velocity*2 : dmxData[3]); // zapis do DMX
+	}
+	HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET); // konec indikace zpracovavani zpravy
+}
+
+void noteOff(uint8_t channel, uint8_t pitch, uint8_t velocity) { // note off
+	HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET); // indikace zpracovavani zpravy
+	uint16_t entries[2]; // 1: adresa prvni vazby midi zpravy, 2: adresa prvni vazby dalsi midi zpravy
+
+	uint8_t dmxData[NOTE_ENTRY_LENGTH];
+	// struktura vazby note on + off:
+	// 0: MSB DMX kanalu
+	// 1: LSB DMX kanalu
+	// 2: pouzivani velocity
+	// 3: DMX hodnota pro Note On
+	// 4: DMX hodnota pro Note Off
+	// 5: timeout MSB
+	// 6: timeout LSB
+
+	// struktura vazby note off:
+	// 0: MSB DMX kanalu
+	// 1: LSB DMX kanalu
+	// 2: DMX hodnota
+
+
+	// vytazeni adres z tabulky adres (note on + off)
+	uint16_t address = CONFIGS + channel * N_TYPES * N_PITCHES * 2 + pitch * 2 + 2 * N_PITCHES * NOTE_TYPE;
+	entries[0] = (uint16_t)((mem1[address] << 8) + mem1[address + 1]);
+	entries[1] = (uint16_t)((mem1[address + 2] << 8) + mem1[address + 3]);
+
+	for (uint16_t i = entries[0]; i < entries[1]; i = i + NOTE_ENTRY_LENGTH) { // prochazeni celeho seznamu
+		memcpy(dmxData, (const void *)&mem2[i], NOTE_ENTRY_LENGTH); // kopirovani dat do pracovni pameti
+		dmxWrite((dmxData[0] << 8) + dmxData[1], dmxData[4]); // zapis do DMX
+		if ((dmxData[5] << 8) + dmxData[6] > 0) { // ruseni timeoutu
 			disableTimeout(channel, pitch);
 		}
-
-	HAL_I2C_Mem_Read(hi2c, MEM1_ADDRESS, CONFIGS + channel * N_TYPES * N_PITCHES * 2 + pitch * 2 + N_PITCHES * 2, I2C_MEMADD_SIZE_16BIT, addresses, 4, 100);
-	entries[0] = (uint16_t)(addresses[0] << 8 + addresses[1]);
-	entries[1] = (uint16_t)(addresses[2] << 8 + addresses[3]);
-	for (uint16_t i = entries[0]; i < entries[1]; i = i + NOTE_OFF_ENTRY_LENGTH) {
-		HAL_I2C_Mem_Read(&hi2c1, MEM2_ADDRESS, i, I2C_MEMADD_SIZE_16BIT, dmxData, NOTE_OFF_ENTRY_LENGTH, 100);
-		dmxWrite(dmxData[0] << 8 + dmxData[1], dmxData[2]);
 	}
+
+	// vytazani adres z tabulky adres (note off)
+	address = CONFIGS + channel * N_TYPES * N_PITCHES * 2 + pitch * 2 + 2 * N_PITCHES * NOTE_OFF_TYPE;
+	entries[0] = (uint16_t)((mem1[address] << 8) + mem1[address + 1]);
+	entries[1] = (uint16_t)((mem1[address + 2] << 8) + mem1[address + 3]);
+
+	for (uint16_t i = entries[0]; i < entries[1]; i = i + NOTE_OFF_ENTRY_LENGTH) { // prochazeni celeho seznamu
+		memcpy(dmxData, (const void *)&mem2[i], NOTE_OFF_ENTRY_LENGTH); // kopirovani dat do pracovni pameti
+		dmxWrite((dmxData[0] << 8) + dmxData[1], dmxData[2]); // zapis do DMX
+	}
+	HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET); // konec indikace zpracovavani zpravy
 }
 
-void controlChange(uint8_t channel, uint8_t controller, uint8_t value) {
-	uint8_t addresses[4]; // buffer to get the 16bit addresses of the entries:
-	uint16_t entries[2]; // 1st value = address of 1st entry, 2nd value = address of 1st entry of next pitch
-	uint8_t dmxData[CONTROL_CHANGE_ENTRY_LENGTH]; // dmx channel
-	HAL_I2C_Mem_Read(hi2c, MEM1_ADDRESS, CONFIGS + channel * N_TYPES * N_PITCHES * 2 + pitch * 2 + 2 * N_PITCHES * 3, I2C_MEMADD_SIZE_16BIT, addresses, 4, 100);
-	entries[0] = (uint16_t)(addresses[0] << 8 + addresses[1]);
-	entries[1] = (uint16_t)(addresses[2] << 8 + addresses[3]);
-	for (uint16_t i = entries[0]; i < entries[1]; i = i + CONTROL_CHANGE_ENTRY_LENGTH) {
-		HAL_I2C_Mem_Read(&hi2c1, MEM2_ADDRESS, i, I2C_MEMADD_SIZE_16BIT, dmxData, CONTROL_CHANGE_ENTRY_LENGTH, 100);
-		dmxWrite(dmxData[0], value*2);
+void controlChange(uint8_t channel, uint8_t controller, uint8_t value) { // control change
+	HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET); // indikace zpracovavani zpravy
+	uint16_t entries[2]; // 1: adresa prvni vazby midi zpravy, 2: adresa prvni vazby dalsi midi zpravy
+
+	uint8_t dmxData[CONTROL_CHANGE_ENTRY_LENGTH];
+	// struktura vazby control change:
+	// 0: MSB DMX kanalu
+	// 1: LSB DMX kanalu
+
+	// vytazeni adres z tabulky adres (control change)
+	uint8_t address = CONFIGS + channel * N_TYPES * N_PITCHES * 2 + controller * 2 + 2 * N_PITCHES * CONTROL_CHANGE_TYPE;
+	entries[0] = (uint16_t)((mem1[address] << 8) + mem1[address + 1]);
+	entries[1] = (uint16_t)((mem1[address + 2] << 8) + mem1[address + 3]);
+
+	for (uint16_t i = entries[0]; i < entries[1]; i = i + CONTROL_CHANGE_ENTRY_LENGTH) { // prochazeni celeho seznamu
+		memcpy(dmxData, (const void *)&mem2[i], CONTROL_CHANGE_ENTRY_LENGTH); // kopirovani dat do pracovni pameti
+		dmxWrite(dmxData[0], value*2); // zapis do DMX
 	}
+	HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET); // konec indikace zpracovavani zpravy
 }
 
 void scheduleTimeout(uint8_t midiChannel, uint8_t pitch, uint16_t dmxChannel, uint8_t dmxValue, uint16_t timeout) {
@@ -165,14 +274,14 @@ void scheduleTimeout(uint8_t midiChannel, uint8_t pitch, uint16_t dmxChannel, ui
 	timeoutScheduleDmxValues[timeoutScheduleWritePtr] = dmxValue;
 	timeoutScheduleTimings[timeoutScheduleWritePtr] = HAL_GetTick() + timeout;
 	timeoutScheduleWritePtr++;
+	timeoutScheduleWritePtr = timeoutScheduleWritePtr % TIMEOUT_SCHEDULE_LENGTH;
 }
 
 void disableTimeout(uint8_t midiChannel, uint8_t pitch) {
 	for (uint8_t i = 0; i < TIMEOUT_SCHEDULE_LENGTH; i++) {
-		if (timeoutScheduleMidiChannels[i] == midiChannel && timeoutScheduleMidiPitches[i] = pitch) {
+		if (timeoutScheduleMidiChannels[i] == midiChannel && timeoutScheduleMidiPitches[i] == pitch) {
 			timeoutScheduleMidiChannels[i] = UINT8_MAX;
 			timeoutScheduleMidiPitches[i] = UINT8_MAX;
-			timeoutScheduleDmxChannels[i] = UINT16_MAX;
 			timeoutScheduleTimings[i] = UINT32_MAX;
 		}
 	}
@@ -180,9 +289,11 @@ void disableTimeout(uint8_t midiChannel, uint8_t pitch) {
 
 void checkForTimeouts() {
 	for (uint8_t i = 0; i < TIMEOUT_SCHEDULE_LENGTH; i++) {
-		if (noteOffQueueTimings[i] <= HAL_GetTick()) {
-			noteOff(noteOffQueue[i*2], noteOffQueue[i*2 + 1], 0);
-			noteOffQueueTimings[i] = UINT32_MAX;
+		if (timeoutScheduleTimings[i] <= HAL_GetTick()) {
+			dmxWrite(timeoutScheduleDmxChannels[i], timeoutScheduleDmxValues[i]);
+			timeoutScheduleMidiChannels[i] = UINT8_MAX;
+			timeoutScheduleMidiPitches[i] = UINT8_MAX;
+			timeoutScheduleTimings[i] = UINT32_MAX;
 		}
 	}
 }
@@ -219,34 +330,43 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
+  MX_I2C1_Init();
   MX_USART3_UART_Init();
   MX_USART1_UART_Init();
-  MX_USB_DEVICE_Init();
-  MX_I2C1_Init();
+  MX_TIM16_Init();
   /* USER CODE BEGIN 2 */
 	midiInit(&huart1, &hdma_usart1_rx);
-	dmxInit(&huart3, 64, 0x00);
-
-	timeoutScheduleWritePtr = 0;
+	dmxInit(&huart3, &htim16, 64, 0x00);
 
 	setNoteOnHandler(noteOn);
 	setNoteOffHandler(noteOff);
 	setControlChangeHandler(controlChange);
 
-
+	timeoutScheduleWritePtr = 0;
 	for (uint8_t i = 0; i < TIMEOUT_SCHEDULE_LENGTH; i++) {
 		timeoutScheduleMidiChannels[i] = UINT8_MAX;
 		timeoutScheduleMidiPitches[i] = UINT8_MAX;
-		timeoutScheduleDmxChannels[i] = UINT16_MAX;
 		timeoutScheduleTimings[i] = UINT32_MAX;
 	}
+
+	// tabulka pro ucely testovani
+	initializePrototypeTable();
+
+	// kontrola pripojeni usb
+	if (HAL_GPIO_ReadPin(VBUS_DETECT_GPIO_Port, VBUS_DETECT_Pin) == GPIO_PIN_SET) {
+		MX_USB_DEVICE_Init();
+	}
+
+	dmxWrite(1, 255);
+	dmxOn();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
 	for (;;)
 	{
-		checkForTimeouts();
+		readMidi(); // zpracovanani prijatych midi zprav z fronty
+		checkForTimeouts(); // kontrola timeoutu
 	}
     /* USER CODE END WHILE */
 
@@ -274,7 +394,7 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL6;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -289,15 +409,16 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
   {
     Error_Handler();
   }
   PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USB|RCC_PERIPHCLK_USART1
-                              |RCC_PERIPHCLK_I2C1;
+                              |RCC_PERIPHCLK_I2C1|RCC_PERIPHCLK_TIM16;
   PeriphClkInit.Usart1ClockSelection = RCC_USART1CLKSOURCE_PCLK1;
   PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_HSI;
-  PeriphClkInit.USBClockSelection = RCC_USBCLKSOURCE_PLL;
+  PeriphClkInit.USBClockSelection = RCC_USBCLKSOURCE_PLL_DIV1_5;
+  PeriphClkInit.Tim16ClockSelection = RCC_TIM16CLK_HCLK;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
     Error_Handler();
@@ -320,7 +441,7 @@ static void MX_I2C1_Init(void)
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x0010020A;
+  hi2c1.Init.Timing = 0x00201D2B;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -335,7 +456,7 @@ static void MX_I2C1_Init(void)
 
   /** Configure Analogue filter
   */
-  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_DISABLE) != HAL_OK)
   {
     Error_Handler();
   }
@@ -349,6 +470,38 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief TIM16 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM16_Init(void)
+{
+
+  /* USER CODE BEGIN TIM16_Init 0 */
+
+  /* USER CODE END TIM16_Init 0 */
+
+  /* USER CODE BEGIN TIM16_Init 1 */
+
+  /* USER CODE END TIM16_Init 1 */
+  htim16.Instance = TIM16;
+  htim16.Init.Prescaler = 71;
+  htim16.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim16.Init.Period = 65535;
+  htim16.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim16.Init.RepetitionCounter = 0;
+  htim16.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim16) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM16_Init 2 */
+
+  /* USER CODE END TIM16_Init 2 */
 
 }
 
@@ -372,7 +525,7 @@ static void MX_USART1_UART_Init(void)
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
-  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.Mode = UART_MODE_RX;
   huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart1.Init.OverSampling = UART_OVERSAMPLING_16;
   huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
@@ -407,7 +560,7 @@ static void MX_USART3_UART_Init(void)
   huart3.Init.WordLength = UART_WORDLENGTH_8B;
   huart3.Init.StopBits = UART_STOPBITS_2;
   huart3.Init.Parity = UART_PARITY_NONE;
-  huart3.Init.Mode = UART_MODE_TX_RX;
+  huart3.Init.Mode = UART_MODE_TX;
   huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart3.Init.OverSampling = UART_OVERSAMPLING_16;
   huart3.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
@@ -493,45 +646,20 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : VBUS_DETECT_Pin */
+  GPIO_InitStruct.Pin = VBUS_DETECT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(VBUS_DETECT_GPIO_Port, &GPIO_InitStruct);
+
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
-void StartMidiTask(void *argument) {
-	for(;;)
-	{
-		readMidi();
-	}
-}
 
-void StartDmxTask(void *argument) {
-	startDmx();
-}
 /* USER CODE END 4 */
-
-/**
-  * @brief  Period elapsed callback in non blocking mode
-  * @note   This function is called  when TIM1 interrupt took place, inside
-  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
-  * a global variable "uwTick" used as application time base.
-  * @param  htim : TIM handle
-  * @retval None
-  */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-  /* USER CODE BEGIN Callback 0 */
-
-  /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM1)
-  {
-    HAL_IncTick();
-  }
-  /* USER CODE BEGIN Callback 1 */
-
-  /* USER CODE END Callback 1 */
-}
 
 /**
   * @brief  This function is executed in case of error occurrence.

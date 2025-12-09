@@ -8,6 +8,7 @@
 #include "midi.h"
 #include <stdio.h>
 
+// deklarace ukazatelu na handlery
 void (*midiNoteOnHandler)(uint8_t channel, uint8_t pitch, uint8_t velocity);
 void (*midiNoteOffHandler)(uint8_t channel, uint8_t pitch, uint8_t velocity);
 void (*midiPolyAftertouchHandler)(uint8_t channel, uint8_t pitch, uint8_t value);
@@ -27,24 +28,20 @@ void (*midiStopHandler)();
 void (*midiActiveSensingHandler)();
 void (*midiResetHandler)();
 
-static uint8_t midiInBuffer[MIDI_BUFFER_LENGTH];
-static volatile uint16_t midiBufReadPtr;
-static UART_HandleTypeDef* uart;
-static DMA_HandleTypeDef* dma;
-static uint8_t inputOn;
-#define midiBufWritePtr (MIDI_BUFFER_LENGTH - dma->Instance->CNDTR)
+static uint8_t midiInBuffer[MIDI_BUFFER_LENGTH]; // buffer pro prichozi zpravy
+static UART_HandleTypeDef* uart; // pointer na instanci uart rozhrani
+static DMA_HandleTypeDef* dma; // pointer na instanci dma rozhrani
+static uint8_t inputOn; // stav prijimani
+static volatile uint16_t midiBufReadPtr; // adresa cteni bufferu
+#define midiBufWritePtr (MIDI_BUFFER_LENGTH - dma->Instance->CNDTR) // adresa posledniho zapisu bufferu
+#define dataByte1Index (statusByteIndex + 1) % MESSAGE_BUFFER_LENGTH // makra pro zjednoduseni matematickeho zapisu pozice v bufferu pri cteni
+#define dataByte2Index (statusByteIndex + 2) % MESSAGE_BUFFER_LENGTH
 
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-	if (huart == uart) {
-		readMidi();
-	}
-}
-
-void midiInit(UART_HandleTypeDef * uartTD, DMA_HandleTypeDef * dmaInstance) {
+void midiInit(UART_HandleTypeDef * uartTD, DMA_HandleTypeDef * dmaTD) { // inicializace
 	uart = uartTD;
-	dma = dmaInstance;
-	inputOn = 1;
+	dma = dmaTD;
 
+	// ve vychozim stavu nezpracovavame zadne zpravy
 	midiBufReadPtr = 0;
 	midiNoteOnHandler = NULL;
 	midiNoteOffHandler = NULL;
@@ -64,18 +61,20 @@ void midiInit(UART_HandleTypeDef * uartTD, DMA_HandleTypeDef * dmaInstance) {
 	midiActiveSensingHandler = NULL;
 	midiResetHandler = NULL;
 
-	HAL_UART_Receive_DMA(uart, midiInBuffer, 1);
+
+	inputOn = 1;
+	HAL_UART_Receive_DMA(uart, midiInBuffer, MIDI_BUFFER_LENGTH); // zapnuti prijmu pomoci DMA
 }
 
 void midiReceiveOn() {
 	inputOn = 1;
-	HAL_UART_Receive_DMA(uart, midiInBuffer, 1);
 }
 
 void midiReceiveOff() {
 	inputOn = 0;
 }
 
+// funkce pro nastaveni handleru midi zprav
 void setNoteOnHandler(void (*func)(uint8_t, uint8_t, uint8_t)) {
 	midiNoteOnHandler = func;
 }
@@ -128,107 +127,108 @@ void setResetHandler(void (*func)()) {
 	midiResetHandler = func;
 }
 
-void readMidi() {
+// zpracovavani midi zprav
+static void handleMidi(uint8_t data) {
 	static uint8_t messageBuf[MESSAGE_BUFFER_LENGTH];
 	static uint8_t messageWritePtr = 0;
-	while(midiBufReadPtr != midiBufWritePtr) {
-		messageBuf[messageWritePtr] = midiInBuffer[midiBufReadPtr];
-		midiBufReadPtr++;
-		midiBufReadPtr = midiBufReadPtr % MIDI_BUFFER_LENGTH;
-		if (messageBuf[messageWritePtr] >= 0b11111000) { // real-time messages need to be handled immediately, even between the data bytes of another message
-			switch (data) {
-			case TIMING_CLOCK:
-				(*midiTimingClockHandler)();
+	uint8_t statusByteIndex;
+	if (data >= 0b11111000) { // real-time zpravy se zpracovavaji prednostne
+		switch (data) {
+		case TIMING_CLOCK:
+			if (midiTimingClockHandler) (*midiTimingClockHandler)();
+			break;
+		case START:
+			if (midiStartHandler) (*midiStartHandler)();
+			break;
+		case CONTINUE:
+			if (midiContinueHandler) (*midiContinueHandler)();
+			break;
+		case STOP:
+			if (midiStopHandler) (*midiStopHandler)();
+			break;
+		case ACTIVE_SENSING:
+			if (midiActiveSensingHandler) (*midiActiveSensingHandler)();
+			break;
+		case RESET:
+			if (midiResetHandler) (*midiResetHandler)();
+			break;
+		}
+		return;
+	}
+	// protoze tohle delame az po kontrole real-time zprav, zachovavame midi zpravu celou
+	messageBuf[messageWritePtr] = data;
+	messageWritePtr++;
+	messageWritePtr = messageWritePtr % MESSAGE_BUFFER_LENGTH;
+
+	if (messageBuf[(messageWritePtr - 2 + MESSAGE_BUFFER_LENGTH) % MESSAGE_BUFFER_LENGTH] > 0x7F) { // zpravy s jednim datovym bytem (kontrola zda minuly byt byl stavovy)
+		statusByteIndex = (messageWritePtr - 2 + MESSAGE_BUFFER_LENGTH) % MESSAGE_BUFFER_LENGTH;
+		if (messageBuf[statusByteIndex] < SYSTEM_EXCLUSIVE) { // kanalove zpravy
+			switch (messageBuf[statusByteIndex] & STATUS_BYTE_TYPE_MASK) {
+			case PROGRAM_CHANGE:
+				if (midiProgramChangeHandler) (*midiProgramChangeHandler)(messageBuf[statusByteIndex] & STATUS_BYTE_CHANNEL_MASK, messageBuf[dataByte1Index]);
 				break;
-			case START:
-				(*midiStartHandler)();
-				break;
-			case CONTINUE:
-				(*midiContinueHandler)();
-				break;
-			case STOP:
-				(*midiStopHandler)();
-				break;
-			case ACTIVE_SENSING:
-				(*midiActiveSensingHandler)();
-				break;
-			case RESET:
-				(*midiResetHandler)();
+			case AFTERTOUCH:
+				if (midiAftertouchHandler) (*midiAftertouchHandler)(messageBuf[statusByteIndex] & STATUS_BYTE_CHANNEL_MASK, messageBuf[dataByte1Index]);
 				break;
 			}
-			HAL_UART_Receive_DMA(uart, midiInBuffer, 1); // we are missing the one byte that got replaced with the real-time message, so we try receiving it again
-			return;
+		} else { // systemove zpravy
+			switch (messageBuf[statusByteIndex]) {
+			case MTC_QUARTER_FRAME:
+				if (midiMtcQuarterFrameHandler) (*midiMtcQuarterFrameHandler)(messageBuf[dataByte1Index] >> 4, messageBuf[dataByte1Index] & 0b00001111);
+				break;
+			case SONG_SELECT:
+				if (midiSongSelectHandler) (*midiSongSelectHandler)(messageBuf[dataByte1Index]);
+				break;
+			}
 		}
-		messageWritePtr++; // we only increment the write pointer if the byte was not a real-time message, by doing this we can overwrite the real-time message with the next data byte, leaving the original midi message intact
-	}
-	if (messageWritePtr == 1) { // received the status byte in this iteration
-		if ( // messages with 2 data bytes
-				message[0] == NOTE_ON ||
-				message[0] == NOTE_OFF ||
-				message[0] == POLY_AFTERTOUCH ||
-				message[0] == CONTROL_CHANGE ||
-				message[0] == PITCH_BEND ||
-				message[0] == SONG_POSITION_POINTER
-				) {
-			HAL_UART_Receive_DMA(uart, midiInBuffer, 2);
-		} else if ( // messages with 1 data byte
-				message[0] == PROGRAM_CHANGE ||
-				message[0] == AFTERTOUCH ||
-				message[0] == MTC_QUARTER_FRAME ||
-				message[0] == SONG_SELECT ||
-				message[0] == SYSTEM_EXCLUSIVE // unknown length, we need to read it byte by byte
-				) {
-			HAL_UART_Receive_DMA(uart, midiInBuffer, 1);
+	} else if (messageBuf[(messageWritePtr - 3 + MESSAGE_BUFFER_LENGTH) % MESSAGE_BUFFER_LENGTH] > 0x7F) { // zpravy se dvema datovymy byty (kontrola zda predminuly byt byl stavovy)
+		statusByteIndex = (messageWritePtr - 3 + MESSAGE_BUFFER_LENGTH) % MESSAGE_BUFFER_LENGTH;
+		if (messageBuf[statusByteIndex] < SYSTEM_EXCLUSIVE) { // kanalove zpravy
+			switch (messageBuf[statusByteIndex] & STATUS_BYTE_TYPE_MASK) {
+			case NOTE_OFF:
+				if (midiNoteOffHandler) (*midiNoteOffHandler)(messageBuf[statusByteIndex] & STATUS_BYTE_CHANNEL_MASK, messageBuf[dataByte1Index], messageBuf[dataByte2Index]);
+				break;
+			case NOTE_ON:
+				if (midiNoteOnHandler) (*midiNoteOnHandler)(messageBuf[statusByteIndex] & STATUS_BYTE_CHANNEL_MASK, messageBuf[dataByte1Index], messageBuf[dataByte2Index]);
+				break;
+			case POLY_AFTERTOUCH:
+				if (midiPolyAftertouchHandler) (*midiPolyAftertouchHandler)(messageBuf[statusByteIndex] & STATUS_BYTE_CHANNEL_MASK, messageBuf[dataByte1Index], messageBuf[dataByte2Index]);
+				break;
+			case CONTROL_CHANGE:
+				if (midiControlChangeHandler) (*midiControlChangeHandler)(messageBuf[statusByteIndex] & STATUS_BYTE_CHANNEL_MASK, messageBuf[dataByte1Index], messageBuf[dataByte2Index]);
+				break;
+			case PITCH_BEND:
+				if (midiPitchBendHandler) (*midiPitchBendHandler)(messageBuf[statusByteIndex] & STATUS_BYTE_CHANNEL_MASK, (messageBuf[dataByte2Index] << 7) + messageBuf[dataByte1Index]);
+				break;
+			}
+		} else { // systemove zpravy
+			switch (messageBuf[statusByteIndex]) {
+				case SONG_POSITION_POINTER:
+					if (midiSongPosHandler) (*midiSongPosHandler)((messageBuf[dataByte2Index] << 7) + messageBuf[dataByte1Index]);
+					break;
+			}
 		}
-	} else if (message[0] < SYSTEM_EXCLUSIVE) { // channel messages (we know the status byte from the previous iteration)
-		switch (message[0] & STATUS_BYTE_TYPE_MASK) {
-		case NOTE_OFF:
-			(*midiNoteOffHandler)(message[0] & STATUS_BYTE_CHANNEL_MASK, message[1], message[2]);
-			break;
-		case NOTE_ON:
-			(*midiNoteOnHandler)(message[0] & STATUS_BYTE_CHANNEL_MASK, message[1], message[2]);
-			break;
-		case POLY_AFTERTOUCH:
-			(*midiPolyAftertouchHandler)(message[0] & STATUS_BYTE_CHANNEL_MASK, message[1], message[2]);
-			break;
-		case CONTROL_CHANGE:
-			(*midiControlChangeHandler)(message[0] & STATUS_BYTE_CHANNEL_MASK, message[1], message[2]);
-			break;
-		case PROGRAM_CHANGE:
-			(*midiProgramChangeHandler)(message[0] & STATUS_BYTE_CHANNEL_MASK, message[1]);
-			break;
-		case AFTERTOUCH:
-			(*midiAftertouchHandler)(message[0] & STATUS_BYTE_CHANNEL_MASK, message[1]);
-			break;
-		case PITCH_BEND:
-			(*midiPitchBendHandler)(message[0] & STATUS_BYTE_CHANNEL_MASK, (message[2] << 7) + message[1]);
-			break;
-		}
-	message[0] = 0;
-	messageWritePtr = 0;
-	HAL_UART_Receive_DMA(uart, midiInBuffer, 1); // we await another status byte
-	} else { // system messages
-		switch (message[0]) {
-		case SYSTEM_EXCLUSIVE:
-			if (message[messageWritePtr - 1] != SYSTEM_EXCLUSIVE_END) {
-				HAL_UART_Receive_DMA(uart, midiInBuffer, 1);
+	} else if (messageBuf[messageWritePtr] == SYSTEM_EXCLUSIVE_END && midiSysExHandler) { // system exclusive
+		uint8_t sysExBuf[SYSTEM_EXCLUSIVE_BUFFER_LENGTH];
+		uint8_t sysExBufWritePtr = SYSTEM_EXCLUSIVE_BUFFER_LENGTH - 1;
+		for (uint8_t i = messageWritePtr + MESSAGE_BUFFER_LENGTH; i > messageWritePtr; i--) {
+			if (messageBuf[i % MESSAGE_BUFFER_LENGTH] == SYSTEM_EXCLUSIVE) {
+				(*midiSysExHandler)(&sysExBuf[sysExBufWritePtr + 1], SYSTEM_EXCLUSIVE_BUFFER_LENGTH - sysExBufWritePtr - 1 );
 				return;
 			}
-			(*midiSysExHandler)(message[1], messageWritePtr - 2);
-			break;
-		case MTC_QUARTER_FRAME:
-			(*midiMtcQuarterFrameHandler)(message[1] >> 4, message[1] & 0b00001111);
-			break;
-		case SONG_POSITION_POINTER:
-			(*midiSongPosHandler)(message[2] << 7 + message[1]);
-			break;
-		case SONG_SELECT:
-			(*midiSongSelectHandler)(message[1]);
-			break;
+			sysExBuf[sysExBufWritePtr] = messageBuf[i % MESSAGE_BUFFER_LENGTH];
+			sysExBufWritePtr--;
 		}
-		message[0] = 0;
-		messageWritePtr = 0;
-		HAL_UART_Receive_DMA(uart, midiInBuffer, 1); // we await another status byte
+	}
+}
+
+// cteni midi
+void readMidi() {
+ 	while (midiBufReadPtr != midiBufWritePtr) { // dokud jsou v bufferu nezpracovane byty
+		uint8_t receivedByte = midiInBuffer[midiBufReadPtr];
+		midiBufReadPtr++;
+		midiBufReadPtr = midiBufReadPtr % MIDI_BUFFER_LENGTH;
+		if (inputOn) handleMidi(receivedByte);
 	}
 }
 

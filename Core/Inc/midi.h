@@ -12,8 +12,9 @@
 
 #define MIDI_BUFFER_LENGTH 64
 #define MESSAGE_BUFFER_LENGTH 64
+#define SYSTEM_EXCLUSIVE_BUFFER_LENGTH 64
 
-// CHANNEL MESSAGES -----------------
+// KANALOVE ZPRAVY -----------------
 #define NOTE_ON 		0b10010000
 #define NOTE_OFF 		0b10000000
 #define POLY_AFTERTOUCH 0b10100000
@@ -22,7 +23,7 @@
 #define	AFTERTOUCH		0b11010000
 #define PITCH_BEND		0b11100000
 
-// SYSTEM MESSAGES ------------------
+// SYSTEMOVE ZPRAVY ------------------
 #define SYSTEM_EXCLUSIVE		0b11110000
 #define SYSTEM_EXCLUSIVE_END	0b11110111
 #define MTC_QUARTER_FRAME		0b11110001
@@ -30,7 +31,7 @@
 #define SONG_SELECT				0b11110011
 #define TUNE_REQUEST			0b11110110
 
-// SYSTEM REALTIME MESSAGES ---------
+// REALTIME ZPRAVY ---------
 #define TIMING_CLOCK	0b11111000
 #define START			0b11111010
 #define CONTINUE		0b11111011
@@ -38,11 +39,12 @@
 #define ACTIVE_SENSING	0b11111110
 #define RESET			0b11111111
 
-// MASKS
+// masky pro rozdeleni detekce typu a kanalu
 #define STATUS_BYTE_TYPE_MASK 0b11110000
 #define STATUS_BYTE_CHANNEL_MASK 0b00001111
 #endif /* INC_MIDI_H_ */
 
+// zpristupneni ukazatelu na handlery
 extern void (*midiNoteOnHandler)(uint8_t channel, uint8_t pitch, uint8_t velocity);
 extern void (*midiNoteOffHandler)(uint8_t channel, uint8_t pitch, uint8_t velocity);
 extern void (*midiPolyAftertouchHandler)(uint8_t channel, uint8_t pitch, uint8_t value);
@@ -62,10 +64,14 @@ extern void (*midiStopHandler)();
 extern void (*midiActiveSensingHandler)();
 extern void (*midiResetHandler)();
 
+
+// zpristupneni funkci
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart);
 
 void midiInit(UART_HandleTypeDef * uart, DMA_HandleTypeDef * dmaC);
 void readMidi();
+void midiReceiveOn();
+void midiReceiveOff();
 
 void setNoteOnHandler(void (*func)(uint8_t, uint8_t, uint8_t));
 void setNoteOffHandler(void (*func)(uint8_t, uint8_t, uint8_t));
