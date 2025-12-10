@@ -248,6 +248,17 @@ void noteOff(uint8_t channel, uint8_t pitch, uint8_t velocity) { // note off
 
 void controlChange(uint8_t channel, uint8_t controller, uint8_t value) { // control change
 	HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET); // indikace zpracovavani zpravy
+	if (controller > 119) { // channel mode zpravy
+		switch (controller) {
+		case ALL_SOUND_OFF: // vynulovani vsech kanalu DMX
+			for (uint16_t i = 1; i < 513; i++) {
+				dmxWrite(i, 0);
+			}
+			break;
+		}
+		HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET); // konec indikace zpracovavani zpravy
+		return;
+	}
 	uint16_t entries[2]; // 1: adresa prvni vazby midi zpravy, 2: adresa prvni vazby dalsi midi zpravy
 
 	uint8_t dmxData[CONTROL_CHANGE_ENTRY_LENGTH];

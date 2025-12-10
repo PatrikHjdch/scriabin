@@ -101,6 +101,9 @@ void usDelay(uint16_t delay);
 
 #define TIMEOUT_SCHEDULE_LENGTH 32 // delka fronty pro timeouty
 
+// kontrolery channel mode zprav
+#define ALL_SOUND_OFF 120
+
 // zpristupneni pameti
 extern volatile uint8_t mem1[1048];
 extern volatile uint8_t mem2[1024];
