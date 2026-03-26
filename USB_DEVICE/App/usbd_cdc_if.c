@@ -22,6 +22,7 @@
 #include "usbd_cdc_if.h"
 
 /* USER CODE BEGIN INCLUDE */
+#include "usbComms.h"
 /* USER CODE END INCLUDE */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -95,6 +96,8 @@ uint8_t UserTxBufferFS[APP_TX_DATA_SIZE];
 /* USER CODE BEGIN PRIVATE_VARIABLES */
 extern uint8_t usbMessageBuf[256];
 extern uint32_t usbMessageBufLen;
+extern volatile uint8_t unhandledUsbFlag;
+extern volatile uint8_t usbIsOn;
 /* USER CODE END PRIVATE_VARIABLES */
 
 /**
@@ -151,6 +154,7 @@ static int8_t CDC_Init_FS(void)
 {
   /* USER CODE BEGIN 3 */
 	/* Set Application Buffers */
+	setUsbStateOn();
 	USBD_CDC_SetTxBuffer(&hUsbDeviceFS, UserTxBufferFS, 0);
 	USBD_CDC_SetRxBuffer(&hUsbDeviceFS, UserRxBufferFS);
 	return (USBD_OK);
@@ -164,6 +168,7 @@ static int8_t CDC_Init_FS(void)
 static int8_t CDC_DeInit_FS(void)
 {
   /* USER CODE BEGIN 4 */
+	setUsbStateOff();
 	return (USBD_OK);
   /* USER CODE END 4 */
 }
@@ -259,9 +264,7 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
-	usbMessageBufLen = (uint32_t) *Len;
-	memcpy(usbMessageBuf, Buf, usbMessageBufLen);
-	handleUsb();
+	copyIncomingData(Buf, *Len);
 	USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
 	USBD_CDC_ReceivePacket(&hUsbDeviceFS);
 	return (USBD_OK);

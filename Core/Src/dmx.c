@@ -6,16 +6,43 @@
  */
 
 #include "dmx.h"
+#include "usbComms.h"
+#include "asyncI2cFetchManager.h"
 
-static uint8_t dmxOutput[513]; // drzitel dmx signalu vcetne startovniho kodu na pozici 0
+static uint8_t dmxOutput[513]; // buffer dmx signalu
 
 static uint16_t channels; // pocet prenasenych kanalu
 static UART_HandleTypeDef* uart; // ukazatel na instanci uart rozhrani
-static uint8_t state; // stav automatu
+static dmxState_t state; // stav automatu
 static TIM_HandleTypeDef* tim; // ukazatel na instanci casovace
 
-void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) { // po uspesnem prenosu po dma
-	if (huart == uart && state == TX_STATE) {
+static uint8_t deferredTransitionFlag = 0;
+
+static void dmxTriggerTransition() {
+	switch (state) {
+	case BREAK_STATE: // po BREAK
+		// zapsani 1 na pin
+		GPIOB->BSRR = (1u << 10);
+		// nastaveni periody
+		tim->Instance->ARR = MAB_DURATION;
+		// zmena stavu
+		state = MAB_STATE;
+		break;
+	case MAB_STATE: // po MAB
+		// zmena rezimu pinu na alternativni funkci (uart)
+		GPIOB->MODER &= ~(3u << (10*2));
+		GPIOB->MODER |= (2u << (10*2));
+		// vypnuti casovace
+		tim->Instance->ARR = UINT16_MAX;
+		tim->Instance->DIER &= ~TIM_DIER_UIE;
+		// zmena stavu
+		state = TX_STATE;
+		// zacatek prenosu
+		HAL_UART_Transmit_DMA(uart, dmxOutput, channels + 1);
+		checkForDefferedMemRead();
+		break;
+	case TX_STATE:
+	case OFF_STATE:
 		// prepnuti pinu na GPIO rezim
 		GPIOB->MODER &= ~(3u << (10*2));
 		GPIOB->MODER |= (1u << (10*2));
@@ -27,34 +54,20 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) { // po uspesnem prenosu
 		tim->Instance->DIER |= TIM_DIER_UIE;
 		// zmena stavu
 		state = BREAK_STATE;
+		break;
 	}
 }
 
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) { // po vyprseni casovace
-	if (htim == tim) {
-		switch (state) {
-		case BREAK_STATE: // po BREAK
-			// zapsani 1 na pin
-			GPIOB->BSRR = (1u << 10);
-			// nastaveni periody
-			tim->Instance->ARR = MAB_DURATION;
-			// zmena stavu
-			state = MAB_STATE;
-			break;
-		case MAB_STATE: // po MAB
-			// zmena rezimu pinu na alternativni funkci (uart)
-			GPIOB->MODER &= ~(3u << (10*2));
-			GPIOB->MODER |= (2u << (10*2));
-			// vypnuti casovace
-			tim->Instance->ARR = UINT16_MAX;
-			tim->Instance->DIER &= ~TIM_DIER_UIE;
-			// zmena stavu
-			state = TX_STATE;
-			// zacatek prenosu
-			HAL_UART_Transmit_DMA(uart, dmxOutput, channels);
-			break;
-		}
-	}
+static void dmxRequestTransition() {
+	if (i2cIsRequestActive()) deferredTransitionFlag = 1;
+	else dmxTriggerTransition();
+}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) { // po uspesnem prenosu po dma
+	if (huart == uart && state == TX_STATE) dmxRequestTransition();
+}
+void dmxTimerElapsedCallback() {
+	dmxRequestTransition();
 }
 
 void dmxInit(UART_HandleTypeDef* uartInstance, TIM_HandleTypeDef* timInstance, uint16_t nChannels, uint8_t startCode) { // inicializace
@@ -89,6 +102,18 @@ void dmxOn() {
 	state = BREAK_STATE;
 }
 
+void checkForDeferredDmxTransition() {
+	if (deferredTransitionFlag) {
+		deferredTransitionFlag = 0;
+		dmxTriggerTransition();
+	}
+}
+
+dmxState_t dmxGetState() {
+	return state;
+}
+
 void dmxWrite(uint16_t pos, uint8_t value) { // zapis do DMX signalu
 	dmxOutput[pos] = value;
+	USB_TX_DMX_Event(pos, value);
 }
