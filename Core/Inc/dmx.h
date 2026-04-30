@@ -27,6 +27,7 @@ typedef enum dmxState_t {
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart);
 
 void dmxInit(UART_HandleTypeDef* uartInstance, TIM_HandleTypeDef* timInstance, uint16_t nChannels, uint8_t startCode);
+void dmxZero();
 void dmxBegin();
 void dmxOff();
 void dmxOn();

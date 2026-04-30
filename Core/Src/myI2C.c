@@ -200,6 +200,7 @@ static void _stepStop() { /// STOP je definovan jako prepnuti SDA z 0 na 1 zatim
 		case 0: // pokud vstupujeme po ACK nebo jsme pripraveni vytvorit STOP
 			if (afterACK) {
 				_resetSCL();
+				_resetSDA();
 				afterACK = 0; // ACK byl osetren
 			} else {
 				_setSDA(); // STOP
@@ -275,7 +276,7 @@ static void _stepDataWrite() {
 	case 1:
 		if (_bitPos == ACK_BIT) {
 			_nackFlag = _readSDA();
-			if (_nackFlag || _dataBufPos == _length) _nextStep();
+			if (_nackFlag || _dataBufPos == _length - 1) _nextStep();
 			else {
 				_bitPos = 0;
 				_dataBufPos++;

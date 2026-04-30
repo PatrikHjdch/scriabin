@@ -57,30 +57,38 @@ void usDelay(uint16_t delay);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define B1_Pin GPIO_PIN_13
-#define B1_GPIO_Port GPIOC
-#define B1_EXTI_IRQn EXTI15_10_IRQn
-#define MEM2_WP_Pin GPIO_PIN_2
-#define MEM2_WP_GPIO_Port GPIOC
-#define MEM1_WP_Pin GPIO_PIN_3
-#define MEM1_WP_GPIO_Port GPIOC
-#define PROF_2_BTN_Pin GPIO_PIN_12
-#define PROF_2_BTN_GPIO_Port GPIOB
-#define PROF_2_BTN_EXTI_IRQn EXTI15_10_IRQn
-#define LD2_Pin GPIO_PIN_13
-#define LD2_GPIO_Port GPIOB
-#define PROF_1_BTN_Pin GPIO_PIN_15
+#define STAT_LED_R_Pin GPIO_PIN_0
+#define STAT_LED_R_GPIO_Port GPIOB
+#define STAT_LED_G_Pin GPIO_PIN_1
+#define STAT_LED_G_GPIO_Port GPIOB
+#define STAT_LED_B_Pin GPIO_PIN_2
+#define STAT_LED_B_GPIO_Port GPIOB
+#define KILLSWITCH_Pin GPIO_PIN_12
+#define KILLSWITCH_GPIO_Port GPIOB
+#define KILLSWITCH_EXTI_IRQn EXTI15_10_IRQn
+#define PROF_1_BTN_Pin GPIO_PIN_13
 #define PROF_1_BTN_GPIO_Port GPIOB
 #define PROF_1_BTN_EXTI_IRQn EXTI15_10_IRQn
-#define PROF_2_LED_Pin GPIO_PIN_7
-#define PROF_2_LED_GPIO_Port GPIOC
+#define PROF_2_BTN_Pin GPIO_PIN_14
+#define PROF_2_BTN_GPIO_Port GPIOB
+#define PROF_2_BTN_EXTI_IRQn EXTI15_10_IRQn
+#define PROF_3_BTN_Pin GPIO_PIN_15
+#define PROF_3_BTN_GPIO_Port GPIOB
+#define PROF_3_BTN_EXTI_IRQn EXTI15_10_IRQn
+#define MIDI_ACTIVITY_LED_Pin GPIO_PIN_6
+#define MIDI_ACTIVITY_LED_GPIO_Port GPIOC
+#define DMX_ACTIVITY_LED_Pin GPIO_PIN_7
+#define DMX_ACTIVITY_LED_GPIO_Port GPIOC
 #define USB_LED_Pin GPIO_PIN_8
 #define USB_LED_GPIO_Port GPIOC
+#define PROF_1_LED_Pin GPIO_PIN_9
+#define PROF_1_LED_GPIO_Port GPIOC
+#define PROF_2_LED_Pin GPIO_PIN_8
+#define PROF_2_LED_GPIO_Port GPIOA
 #define VBUS_DETECT_Pin GPIO_PIN_9
 #define VBUS_DETECT_GPIO_Port GPIOA
-#define PROF_3_BTN_Pin GPIO_PIN_10
-#define PROF_3_BTN_GPIO_Port GPIOA
-#define PROF_3_BTN_EXTI_IRQn EXTI15_10_IRQn
+#define PROF_3_LED_Pin GPIO_PIN_10
+#define PROF_3_LED_GPIO_Port GPIOA
 #define TMS_Pin GPIO_PIN_13
 #define TMS_GPIO_Port GPIOA
 #define TCK_Pin GPIO_PIN_14
@@ -89,14 +97,20 @@ void usDelay(uint16_t delay);
 #define MYI2C_SCL_GPIO_Port GPIOC
 #define MYI2C_SDA_Pin GPIO_PIN_11
 #define MYI2C_SDA_GPIO_Port GPIOC
+#define MEM1_WP_Pin GPIO_PIN_12
+#define MEM1_WP_GPIO_Port GPIOC
+#define MEM2_WP_Pin GPIO_PIN_2
+#define MEM2_WP_GPIO_Port GPIOD
 #define SWO_Pin GPIO_PIN_3
 #define SWO_GPIO_Port GPIOB
-#define PROF_3_LED_Pin GPIO_PIN_5
-#define PROF_3_LED_GPIO_Port GPIOB
-#define PROF_1_LED_Pin GPIO_PIN_6
-#define PROF_1_LED_GPIO_Port GPIOB
+#define MEM3_WP_Pin GPIO_PIN_4
+#define MEM3_WP_GPIO_Port GPIOB
+#define VIN_DETECT_Pin GPIO_PIN_8
+#define VIN_DETECT_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
+
+#define INDICATOR_DURATION 100
 
 // kontrolery channel mode zprav
 #define ALL_SOUND_OFF 120
@@ -108,6 +122,9 @@ void controlChangeAsyncStart(uint8_t channel, uint8_t controller, uint8_t value)
 void scheduleTimeout(uint8_t midiChannel, uint8_t pitch, uint16_t dmxChannel, uint8_t dmxValue, uint16_t timeout); // naplanovani timeoutu
 void disableTimeout(uint8_t midiChannel, uint8_t pitch); // vypnuti timeoutu kdyz vcas prijde midi zprava
 void checkForTimeouts(); // kontrolovani timeoutu
+
+void midiIndicatorOn();
+void dmxIndicatorOn();
 
 void setState(mainState_t state);
 mainState_t getState();

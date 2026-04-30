@@ -10,6 +10,9 @@
 #ifndef INC_MIDI_H_
 #define INC_MIDI_H_
 
+#define USING_IT_MIDI
+//#define USING_DMA_MIDI
+
 #define MIDI_BUFFER_LENGTH 64
 #define MESSAGE_BUFFER_LENGTH 64
 #define SYSTEM_EXCLUSIVE_BUFFER_LENGTH 64
@@ -66,9 +69,12 @@ extern void (*midiResetHandler)();
 
 
 // zpristupneni funkci
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart);
-
+#ifdef USING_IT_MIDI
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size);
+void midiInit(UART_HandleTypeDef * uart);
+#elif defined USING_DMA_MIDI
 void midiInit(UART_HandleTypeDef * uart, DMA_HandleTypeDef * dmaC);
+#endif
 void readMidi();
 void midiReceiveOn();
 void midiReceiveOff();

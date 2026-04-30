@@ -66,15 +66,21 @@ static void dmxRequestTransition() {
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) { // po uspesnem prenosu po dma
 	if (huart == uart && state == TX_STATE) dmxRequestTransition();
 }
+
+void dmxZero() {
+	dmxIndicatorOn();
+	for (uint16_t i = 1; i < 513; i++) {
+		dmxOutput[i] = 0;
+	}
+}
+
 void dmxTimerElapsedCallback() {
 	dmxRequestTransition();
 }
 
 void dmxInit(UART_HandleTypeDef* uartInstance, TIM_HandleTypeDef* timInstance, uint16_t nChannels, uint8_t startCode) { // inicializace
 	dmxOutput[0] = startCode; // startovni kod je vzdy na zacatku prenosu
-	for (uint16_t i = 1; i < 513; i++) {
-		dmxOutput[i] = 0; // zaciname s vynulovanym vesmirem
-	}
+	dmxZero();
 	channels = nChannels; // pocet prenasenych kanalu
 	uart = uartInstance; // ukazatel na instanci uart rozhrani
 	tim = timInstance; // ukazatel na instanci casovace
@@ -115,5 +121,6 @@ dmxState_t dmxGetState() {
 
 void dmxWrite(uint16_t pos, uint8_t value) { // zapis do DMX signalu
 	dmxOutput[pos] = value;
+	dmxIndicatorOn();
 	USB_TX_DMX_Event(pos, value);
 }

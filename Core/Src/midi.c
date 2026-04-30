@@ -8,6 +8,7 @@
 #include "midi.h"
 //#include <stdio.h>
 #include "usbComms.h"
+#include <string.h> // kvuli memcpy
 
 // deklarace ukazatelu na handlery
 void (*midiNoteOnHandler)(uint8_t channel, uint8_t pitch, uint8_t velocity);
@@ -29,18 +30,23 @@ void (*midiStopHandler)();
 void (*midiActiveSensingHandler)();
 void (*midiResetHandler)();
 
-static uint8_t midiInBuffer[MIDI_BUFFER_LENGTH]; // buffer pro prichozi zpravy
+static uint8_t midiInBuffer[MIDI_BUFFER_LENGTH]; // buffer pro prichozi zpravy - pouzivany kruhove
 static UART_HandleTypeDef* uart; // pointer na instanci uart rozhrani
-static DMA_HandleTypeDef* dma; // pointer na instanci dma rozhrani
 static uint8_t inputOn; // stav prijimani
 static volatile uint16_t midiBufReadPtr; // adresa cteni bufferu
+//#define dataByte1Index (statusByteIndex + 1) % MESSAGE_BUFFER_LENGTH // makra pro zjednoduseni matematickeho zapisu pozice v bufferu pri cteni
+//#define dataByte2Index (statusByteIndex + 2) % MESSAGE_BUFFER_LENGTH
+#ifdef USING_IT_MIDI
+static uint8_t uartRxBuffer[MIDI_BUFFER_LENGTH]; // buffer pouze pro prichazi UART data, vse je hned prekopirovano do midiInBuffer aby nedoslo k prepsani dat pred zpracovanim
+static volatile uint16_t midiBufWritePtr;
+void midiInit(UART_HandleTypeDef * uartTD) {
+#elif defined USING_DMA_MIDI
+static DMA_HandleTypeDef* dma; // pointer na instanci dma rozhrani
 #define midiBufWritePtr (MIDI_BUFFER_LENGTH - dma->Instance->CNDTR) // adresa posledniho zapisu bufferu
-#define dataByte1Index (statusByteIndex + 1) % MESSAGE_BUFFER_LENGTH // makra pro zjednoduseni matematickeho zapisu pozice v bufferu pri cteni
-#define dataByte2Index (statusByteIndex + 2) % MESSAGE_BUFFER_LENGTH
-
 void midiInit(UART_HandleTypeDef * uartTD, DMA_HandleTypeDef * dmaTD) { // inicializace
-	uart = uartTD;
 	dma = dmaTD;
+#endif
+	uart = uartTD;
 
 	// ve vychozim stavu nezpracovavame zadne zpravy
 	midiBufReadPtr = 0;
@@ -63,7 +69,11 @@ void midiInit(UART_HandleTypeDef * uartTD, DMA_HandleTypeDef * dmaTD) { // inici
 	midiResetHandler = NULL;
 
 	inputOn = 0;
+#ifdef USING_IT_MIDI
+	HAL_UARTEx_ReceiveToIdle_IT(uart, uartRxBuffer, MIDI_BUFFER_LENGTH);
+#elif def USING_DMA_MIDI
 	HAL_UART_Receive_DMA(uart, midiInBuffer, MIDI_BUFFER_LENGTH); // zapnuti prijmu pomoci DMA
+#endif
 }
 
 void midiReceiveOn() {
@@ -387,3 +397,19 @@ void readMidi() {
 	}
 }
 
+#ifdef USING_IT_MIDI
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
+	if (huart == uart) {
+		if (huart->RxEventType != HAL_UART_RXEVENT_HT) { // podle dokumentace by RxEventType mohlo byt HAL_UART_RXEVENT_HT pouze v pripade DMA, ale pro jistotu
+			uint8_t overflowFlag = (midiBufWritePtr + Size) > MIDI_BUFFER_LENGTH;
+			uint16_t len = overflowFlag ? (MIDI_BUFFER_LENGTH - midiBufWritePtr) : Size;
+			midiIndicatorOn();
+			memcpy(&midiInBuffer[midiBufWritePtr], uartRxBuffer, len);
+			if (overflowFlag) memcpy(midiInBuffer, &uartRxBuffer[len], Size-len);
+			midiBufWritePtr += Size;
+			midiBufWritePtr = midiBufWritePtr % MIDI_BUFFER_LENGTH;
+			HAL_UARTEx_ReceiveToIdle_IT(uart, uartRxBuffer, MIDI_BUFFER_LENGTH);
+		}
+	}
+}
+#endif

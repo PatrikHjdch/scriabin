@@ -78,14 +78,14 @@ static operationResult_t _addressTablePageWriteInit() {
 
 static operationResult_t _linkListPageWrite() {
 	_linkListPageLen = PAGE_BUFFER_LENGTH - (_linkListPtr % PAGE_BUFFER_LENGTH);
-	if ((_linkListEnd - _linkListPtr + 2) < _linkListPageLen) _linkListPageLen = _linkListEnd - _linkListPtr + 2;
+	if ((_linkListEnd - _linkListPtr + 1) < _linkListPageLen) _linkListPageLen = _linkListEnd - _linkListPtr + 1;
 	if (myI2C_MemWrite(LINK_LIST_ADDRESS, _linkListPtr, _linkDataBuf, _linkListPageLen) == I2C_OK) return SC_OK;
 	// if (HAL_I2C_Mem_Write_IT(&hi2c1, LINK_LIST_ADDRESS, _linkListPtr, I2C_MEMADD_SIZE_16BIT, &_linkDataBuf[getLinkDataLength(_type) - _linkListPageLen], _linkListPageLen) == HAL_OK) return SC_OK;
 	else return SC_ERR_I2C;
 }
 
 static operationResult_t _linkListPageWriteInit() {
-	_linkListEnd = _linkListPtr + getLinkDataLength(_type);
+	_linkListEnd = _linkListPtr + getLinkDataLength(_type) - 1;
 	_linkListPageLen = 0;
 	return _linkListPageWrite();
 }
@@ -104,7 +104,7 @@ void mapUploadCheckUpdate() {
 		case MAP_UPLOAD_CHANNEL:
 		case MAP_UPLOAD_TYPE:
 		case MAP_UPLOAD_PITCH:
-			_addressTablePtr += _addressTablePageLen + 2;
+			_addressTablePtr += _addressTablePageLen;
 			if (_addressTablePtr < _addressTableEnd) {
 				_addressTablePageWrite();
 			} else {
@@ -112,15 +112,16 @@ void mapUploadCheckUpdate() {
 			}
 			break;
 		case MAP_UPLOAD_LINK:
-			_linkListPtr += _linkListPageLen + 1;
-			if (_linkListPtr < _linkListEnd) {
+			_linkListPtr += _linkListPageLen;
+			if (_linkListPtr <= _linkListEnd) {
+				_linkDataBuf += _linkListPageLen;
 				_linkListPageWrite();
 			} else {
 				USB_TX_ACK();
 			}
 			break;
 		case MAP_UPLOAD_END:
-			_addressTablePtr += _addressTablePageLen + 2;
+			_addressTablePtr += _addressTablePageLen;
 			if (_addressTablePtr < _addressTableEnd) {
 				_addressTablePageWrite();
 			} else {
