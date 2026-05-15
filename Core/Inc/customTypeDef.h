@@ -8,18 +8,6 @@
 #define USING_CUSTOMTYPEDEF
 #include "stm32f302x8.h"
 
-typedef enum mainState_t {
-	STATE_BROKEN,
-	STATE_WORKING,
-	STATE_UPLOAD
-} mainState_t;
-
-typedef enum linkType_t {
-	NOTE_LINK = 0x00,
-	NOTE_ON_LINK = 0x01,
-	NOTE_OFF_LINK = 0x02,
-	CONTROL_CHANGE_LINK = 0x03
-} linkType_t;
 
 // pouzivame prefix SC pro zamezeni mozneho zameneni s jinymi konstantami
 typedef enum operationResult_t {

@@ -6,8 +6,8 @@
  */
 
 #include "dmx.h"
-#include "usbComms.h"
-#include "asyncI2cFetchManager.h"
+#include "mapClient.h"
+#include "usbAppClient.h"
 
 static uint8_t dmxOutput[513]; // buffer dmx signalu
 
@@ -39,10 +39,17 @@ static void dmxTriggerTransition() {
 		state = TX_STATE;
 		// zacatek prenosu
 		HAL_UART_Transmit_DMA(uart, dmxOutput, channels + 1);
-		checkForDefferedMemRead();
+		map_CheckForDefferedMemRead();
 		break;
 	case TX_STATE:
 	case OFF_STATE:
+		// indikace
+		static uint8_t iteration = 0;
+		if (iteration++ >= 100) {
+			dmxIndicatorOn();
+			iteration = 0;
+		}
+
 		// prepnuti pinu na GPIO rezim
 		GPIOB->MODER &= ~(3u << (10*2));
 		GPIOB->MODER |= (1u << (10*2));
@@ -68,7 +75,7 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) { // po uspesnem prenosu
 }
 
 void dmxZero() {
-	dmxIndicatorOn();
+	//dmxIndicatorOn();
 	for (uint16_t i = 1; i < 513; i++) {
 		dmxOutput[i] = 0;
 	}
@@ -121,6 +128,14 @@ dmxState_t dmxGetState() {
 
 void dmxWrite(uint16_t pos, uint8_t value) { // zapis do DMX signalu
 	dmxOutput[pos] = value;
-	dmxIndicatorOn();
+	//dmxIndicatorOn();
 	USB_TX_DMX_Event(pos, value);
+}
+
+void dmxToggleOnOff() {
+	if (state == OFF_STATE) {
+		dmxOn();
+	} else {
+		dmxOff();
+	}
 }

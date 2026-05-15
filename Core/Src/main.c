@@ -23,14 +23,12 @@
 /* USER CODE BEGIN Includes */
 #include "dmx.h"
 #include "midi.h"
+#include "mapClient.h"
 #include "myI2C.h"
 #include "usbd_cdc_if.h"
 #include "usb_device.h"
-#include "usbComms.h"
-#include "asyncI2cFetchManager.h"
+#include "usbAppClient.h"
 #include "timeoutManager.h"
-#include "asyncUploadManager.h"
-#include "mapProperties.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -145,10 +143,10 @@ mainState_t getState() {
 void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c) {
 	switch (mainState) {
 	case STATE_UPLOAD:
-		uploader_MemRxCpltCallback(hi2c->State == HAL_I2C_STATE_READY ? I2C_OK : I2C_ERR);
+		map_Upl_MemRxCpltCallback(hi2c->State == HAL_I2C_STATE_READY ? I2C_OK : I2C_ERR);
 		break;
 	case STATE_WORKING:
-		midiHandler_MemRxCpltCallback(hi2c->State == HAL_I2C_STATE_READY ? I2C_OK : I2C_ERR);
+		map_MemRxCpltCallback(hi2c->State == HAL_I2C_STATE_READY ? I2C_OK : I2C_ERR);
 		break;
 	default:
 		break;
@@ -161,31 +159,50 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) { // po vyprseni cas
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+	static uint32_t killswitchLastPressed = 0;
+	static uint32_t profile1LastPressed = 0;
+	static uint32_t profile2LastPressed = 0;
+	static uint32_t profile3LastPressed = 0;
+	uint32_t currentTime = HAL_GetTick();
 	switch (GPIO_Pin) {
 	case KILLSWITCH_Pin:
-		dmxZero();
+		if (killswitchLastPressed + BUTTON_DEBOUNCE_DURATION > currentTime) return;
+		if ((KILLSWITCH_GPIO_Port->IDR & KILLSWITCH_Pin) == 0) {
+			if (killswitchLastPressed + BUTTON_HOLD_THRESHOLD > currentTime) {
+				dmxZero();
+			} else {
+				dmxToggleOnOff();
+			}
+		}
+		killswitchLastPressed = currentTime;
 		break;
 	case PROF_1_BTN_Pin:
+		if (profile1LastPressed + BUTTON_DEBOUNCE_DURATION > currentTime) return;
+		profile1LastPressed = currentTime;
 		setProfile(0);
 		break;
 	case PROF_2_BTN_Pin:
+		if (profile2LastPressed + BUTTON_DEBOUNCE_DURATION > currentTime) return;
+		profile2LastPressed = currentTime;
 		setProfile(1);
 		break;
 	case PROF_3_BTN_Pin:
+		if (profile3LastPressed + BUTTON_DEBOUNCE_DURATION > currentTime) return;
+		profile3LastPressed = currentTime;
 		setProfile(2);
 	}
 }
 
 void noteOnAsyncStart(uint8_t channel, uint8_t pitch, uint8_t velocity) {
-	enqueueMessage(activeProfile, NOTE_ON, channel, pitch, velocity);
+	map_EnqueueMidiHandling(activeProfile, NOTE_ON, channel, pitch, velocity);
 }
 
 void noteOffAsyncStart(uint8_t channel, uint8_t pitch, uint8_t velocity) {
-	enqueueMessage(activeProfile, NOTE_OFF, channel, pitch, velocity);
+	map_EnqueueMidiHandling(activeProfile, NOTE_OFF, channel, pitch, velocity);
 }
 
 void controlChangeAsyncStart(uint8_t channel, uint8_t controller, uint8_t value) {
-	enqueueMessage(activeProfile, CONTROL_CHANGE, channel, controller, value);
+	map_EnqueueMidiHandling(activeProfile, CONTROL_CHANGE, channel, controller, value);
 }
 
 
@@ -241,7 +258,7 @@ int main(void)
 
 	myI2C_Init(myI2C_sdaStruct, myI2C_sclStruct, &htim17);
 	HAL_TIM_Base_Start(&htim17);
-	dmxInit(&huart3, &htim16, 64, 0x00);
+	dmxInit(&huart3, &htim16, 512, 0x00);
 #ifdef USING_IT_MIDI
 	midiInit(&huart1);
 #elif defined USING_DMA_MIDI
@@ -250,6 +267,7 @@ int main(void)
 	setNoteOnHandler(noteOnAsyncStart);
 	setNoteOffHandler(noteOffAsyncStart);
 	setControlChangeHandler(controlChangeAsyncStart);
+	map_DualVelocityQueueInit();
 	MX_USB_DEVICE_Init();
 
 	HAL_GPIO_WritePin(STAT_LED_R_GPIO_Port, STAT_LED_R_Pin, GPIO_PIN_SET);
@@ -268,11 +286,11 @@ int main(void)
 		switch (mainState) {
 		case STATE_WORKING:
 			readMidi(); // parsovani midi zprav
-			handleMidiRequests(); // zpracovavani midi requestu
+			map_StepMidiHandling(); // zpracovavani midi requestu
 			checkForTimeouts(); // kontrola timeoutu
 			break;
 		case STATE_UPLOAD:
-			mapUploadCheckUpdate();
+			map_StepUpload();
 			break;
 		case STATE_BROKEN:
 			break;
@@ -297,13 +315,12 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
-  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-  RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL12;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -318,14 +335,14 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
   {
     Error_Handler();
   }
   PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USB|RCC_PERIPHCLK_USART1
                               |RCC_PERIPHCLK_TIM16|RCC_PERIPHCLK_TIM17;
   PeriphClkInit.Usart1ClockSelection = RCC_USART1CLKSOURCE_PCLK1;
-  PeriphClkInit.USBClockSelection = RCC_USBCLKSOURCE_PLL_DIV1_5;
+  PeriphClkInit.USBClockSelection = RCC_USBCLKSOURCE_PLL;
   PeriphClkInit.Tim16ClockSelection = RCC_TIM16CLK_HCLK;
   PeriphClkInit.Tim17ClockSelection = RCC_TIM17CLK_HCLK;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
@@ -504,6 +521,9 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(OSC_ENABLE_GPIO_Port, OSC_ENABLE_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, STAT_LED_R_Pin|STAT_LED_G_Pin|STAT_LED_B_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
@@ -518,6 +538,13 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(MEM3_WP_GPIO_Port, MEM3_WP_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : OSC_ENABLE_Pin */
+  GPIO_InitStruct.Pin = OSC_ENABLE_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(OSC_ENABLE_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PA2 PA3 */
   GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_3;
@@ -534,10 +561,14 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : KILLSWITCH_Pin PROF_1_BTN_Pin PROF_2_BTN_Pin PROF_3_BTN_Pin
-                           VIN_DETECT_Pin */
-  GPIO_InitStruct.Pin = KILLSWITCH_Pin|PROF_1_BTN_Pin|PROF_2_BTN_Pin|PROF_3_BTN_Pin
-                          |VIN_DETECT_Pin;
+  /*Configure GPIO pin : KILLSWITCH_Pin */
+  GPIO_InitStruct.Pin = KILLSWITCH_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(KILLSWITCH_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PROF_1_BTN_Pin PROF_2_BTN_Pin PROF_3_BTN_Pin VIN_DETECT_Pin */
+  GPIO_InitStruct.Pin = PROF_1_BTN_Pin|PROF_2_BTN_Pin|PROF_3_BTN_Pin|VIN_DETECT_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);

@@ -4,8 +4,8 @@
  *  Created on: Jun 22, 2025
  *      Author: Patrik
  */
-#include "main.h"
 #include <stdint.h>
+#include "main.h"
 
 #ifndef INC_MIDI_H_
 #define INC_MIDI_H_
@@ -13,7 +13,7 @@
 #define USING_IT_MIDI
 //#define USING_DMA_MIDI
 
-#define MIDI_BUFFER_LENGTH 64
+#define MIDI_BUFFER_LENGTH 128
 #define MESSAGE_BUFFER_LENGTH 64
 #define SYSTEM_EXCLUSIVE_BUFFER_LENGTH 64
 

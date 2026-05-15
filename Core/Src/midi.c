@@ -5,10 +5,9 @@
  *      Author: Patrik
  */
 
-#include "midi.h"
-//#include <stdio.h>
-#include "usbComms.h"
 #include <string.h> // kvuli memcpy
+#include "midi.h"
+#include "usbAppClient.h"
 
 // deklarace ukazatelu na handlery
 void (*midiNoteOnHandler)(uint8_t channel, uint8_t pitch, uint8_t velocity);
@@ -395,6 +394,17 @@ void readMidi() {
 		midiBufReadPtr = midiBufReadPtr % MIDI_BUFFER_LENGTH;
 		if (inputOn) handleMidi(receivedByte);
 	}
+ 	switch (uart->RxState) {
+ 	case HAL_UART_STATE_BUSY_RX:
+ 		break;
+ 	case HAL_UART_STATE_READY:
+ 		midiIndicatorOn();
+ 		HAL_UARTEx_ReceiveToIdle_IT(uart, uartRxBuffer, MIDI_BUFFER_LENGTH);
+ 		break;
+ 	default:
+ 		setState(STATE_BROKEN);
+ 		break;
+ 	}
 }
 
 #ifdef USING_IT_MIDI
@@ -403,7 +413,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
 		if (huart->RxEventType != HAL_UART_RXEVENT_HT) { // podle dokumentace by RxEventType mohlo byt HAL_UART_RXEVENT_HT pouze v pripade DMA, ale pro jistotu
 			uint8_t overflowFlag = (midiBufWritePtr + Size) > MIDI_BUFFER_LENGTH;
 			uint16_t len = overflowFlag ? (MIDI_BUFFER_LENGTH - midiBufWritePtr) : Size;
-			midiIndicatorOn();
+			//midiIndicatorOn();
 			memcpy(&midiInBuffer[midiBufWritePtr], uartRxBuffer, len);
 			if (overflowFlag) memcpy(midiInBuffer, &uartRxBuffer[len], Size-len);
 			midiBufWritePtr += Size;

@@ -4,8 +4,8 @@
  *  Created on: Jun 22, 2025
  *      Author: Patrik
  */
-#include "main.h"
 #include <stdint.h>
+#include "main.h"
 #ifndef INC_DMX_H_
 #define INC_DMX_H_
 
@@ -35,3 +35,4 @@ void dmxWrite(uint16_t pos, uint8_t value);
 dmxState_t dmxGetState();
 void checkForDeferredDmxTransition();
 void dmxTimerElapsedCallback();
+void dmxToggleOnOff();

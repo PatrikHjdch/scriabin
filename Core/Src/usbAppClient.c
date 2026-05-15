@@ -1,7 +1,7 @@
-#include "usbComms.h"
 #include "stm32f3xx_hal.h"
+#include "usbAppClient.h"
 #include "usbd_cdc_if.h"
-#include "asyncUploadManager.h"
+#include "mapClient.h"
 
 static uint8_t usbState = 0;
 static uint8_t unhandledFlag = 0;
@@ -107,51 +107,30 @@ void USB_TX_Address_Read_Event(uint8_t* a) {
 }
 
 void USB_HandleIncoming() { // zpracovani USB zpravy
-	operationResult_t result;
 	switch (rxBuf[0]) {
 	case IN_HELLO: // testovaci zprava
 		USB_TX_Ping();
 		break;
 	case IN_START_UPLOAD: // zacatek prenosu
-		result = uploadBegin();
+		map_BeginUpload();
 		break;
 	case IN_END_UPLOAD: // konec prenosu
-		result = uploadEnd();
+		map_FinishUpload();
 		break;
 	case IN_PROFILE: // zmena profilu
-		result = uploadProfile(rxBuf[1]);
+		map_SetUploadLinkProfile(rxBuf[1]);
 		break;
 	case IN_CHANNEL: // zmena kanalu
-		result = uploadChannel(rxBuf[1]);
+		map_SetUploadLinkChannel(rxBuf[1]);
 		break;
 	case IN_TYPE: // zmena typu vazby
-		result = uploadType(rxBuf[1]);
+		map_SetUploadLinkType(rxBuf[1]);
 		break;
 	case IN_PITCH: // zmena cisla noty
-		result = uploadPitch(rxBuf[1]);
+		map_SetUploadLinkPitch(rxBuf[1]);
 		break;
 	case IN_NEW_LINK: // nova vazba
-		result = uploadLink(&rxBuf[1]);
-		break;
-	}
-	switch (result) {
-	case SC_OK:
-		break;
-	case SC_ERR_INVALID_STATE:
-		USB_TX_ERR_INVALID_STATE();
-		setState(STATE_BROKEN);
-		break;
-	case SC_ERR_LINKS_OUT_OF_ORDER:
-		USB_TX_ERR_OUT_OF_ORDER();
-		setState(STATE_BROKEN);
-		break;
-	case SC_ERR_I2C:
-		USB_TX_ERR_I2C(0);
-		setState(STATE_BROKEN);
-		break;
-	case SC_ERR_UNINITALIZED:
-		USB_TX_ERR_INVALID_STATE();
-		setState(STATE_BROKEN);
+		map_WriteUploadLinkData(&rxBuf[1]);
 		break;
 	}
 	unhandledFlag = 0;

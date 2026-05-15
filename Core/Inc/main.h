@@ -31,7 +31,7 @@ extern "C" {
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "customTypeDef.h"
+
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/
@@ -57,6 +57,8 @@ void usDelay(uint16_t delay);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define OSC_ENABLE_Pin GPIO_PIN_1
+#define OSC_ENABLE_GPIO_Port GPIOF
 #define STAT_LED_R_Pin GPIO_PIN_0
 #define STAT_LED_R_GPIO_Port GPIOB
 #define STAT_LED_G_Pin GPIO_PIN_1
@@ -109,8 +111,16 @@ void usDelay(uint16_t delay);
 #define VIN_DETECT_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
+typedef enum mainState_t {
+	STATE_BROKEN,
+	STATE_WORKING,
+	STATE_UPLOAD
+} mainState_t;
 
-#define INDICATOR_DURATION 100
+
+#define INDICATOR_DURATION 25
+#define BUTTON_DEBOUNCE_DURATION 50
+#define BUTTON_HOLD_THRESHOLD 500
 
 // kontrolery channel mode zprav
 #define ALL_SOUND_OFF 120
